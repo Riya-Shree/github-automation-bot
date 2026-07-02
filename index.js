@@ -2,141 +2,168 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const bodyParser = require('body-parser');
 const { createClient } = require('@supabase/supabase-js');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// We need raw bodies for the webhook signature verification later
-app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 // ==========================================
-// 1. GITHUB OAUTH FLOW
+// 1. AUTH & DASHBOARD ROUTER
 // ==========================================
+const authRouter = express.Router();
+authRouter.use(express.json());
+authRouter.use(express.urlencoded({ extended: true }));
 
-// Step A: Redirect user to GitHub to authorize the app
-app.get('/auth/github', (req, res) => {
+authRouter.get('/github', (req, res) => {
     const redirectUri = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&scope=repo`;
     res.redirect(redirectUri);
 });
 
-// Step B: GitHub redirects back here with a temporary code
-app.get('/auth/github/callback', async (req, res) => {
-    const code = req.query.code;
-    
-    if (!code) {
-        return res.status(400).send('No code provided by GitHub');
-    }
-
+authRouter.get('/github/callback', async (req, res) => {
     try {
-        // 1. Exchange the code for an Access Token
         const tokenResponse = await axios.post('https://github.com/login/oauth/access_token', {
             client_id: process.env.GITHUB_CLIENT_ID,
             client_secret: process.env.GITHUB_CLIENT_SECRET,
-            code: code
-        }, { 
-            headers: { Accept: 'application/json' } 
-        });
+            code: req.query.code
+        }, { headers: { Accept: 'application/json' } });
 
         const accessToken = tokenResponse.data.access_token;
-
-        // 2. Use the token to get the user's GitHub profile info
         const userResponse = await axios.get('https://api.github.com/user', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
 
         const githubId = userResponse.data.id.toString();
 
-        // 3. Save or update the user securely in Supabase
-        const { error } = await supabase.from('users').upsert({
+        await supabase.from('users').upsert({
             github_id: githubId,
             access_token: accessToken
         }, { onConflict: 'github_id' });
 
-        if (error) throw error;
-
-        res.send(`
-            <h1>Login Successful! 🎉</h1>
-            <p>Your GitHub account is connected. You can now configure a webhook on your GitHub repository to point to your server.</p>
-        `);
+        // Set a secure cookie to keep the user logged in, then redirect to the dashboard
+        res.cookie('github_id', githubId, { httpOnly: true });
+        res.redirect('/dashboard');
     } catch (error) {
-        console.error('Authentication error:', error.response?.data || error.message);
-        res.status(500).send('Authentication failed. Check your terminal logs.');
+        res.status(500).send('Authentication failed.');
     }
 });
 
-// Start the server
-const PORT = process.env.PORT || 3000;
+app.use('/auth', authRouter);
 
 // ==========================================
-// 2. SECURITY: WEBHOOK SIGNATURE VERIFICATION
+// 2. THE UI DASHBOARD (Core Req 6)
 // ==========================================
-function verifyGitHubSignature(req, res, next) {
-    const signature = req.headers['x-hub-signature-256'];
-    if (!signature) {
-        return res.status(401).send('No signature found');
+app.get('/dashboard', async (req, res) => {
+    // Security check: Make sure they are logged in via the cookie
+    const userId = req.cookies.github_id;
+    if (!userId) {
+        return res.status(401).send(`
+            <div style="font-family: sans-serif; padding: 2rem;">
+                <h2>Unauthorized</h2>
+                <p>You must log in to view the dashboard.</p>
+                <a href="/auth/github">Login with GitHub</a>
+            </div>
+        `);
     }
 
-    // Hash our payload with our secret
-    const hmac = crypto.createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET);
-    const digest = 'sha256=' + hmac.update(req.body).digest('hex');
+    // Fetch the logs from Supabase
+    const { data: events, error } = await supabase.from('webhook_events').select('*').limit(50);
+    if (error) return res.status(500).send('Error loading dashboard data');
 
-    // Compare the hashes securely
-    if (signature !== digest) {
-        return res.status(401).send('Unauthorized: Signature mismatch');
-    }
-    next();
-}
+    // Generate HTML rows for the table
+    const tableRows = events.map(event => `
+        <tr>
+            <td style="padding: 10px; border: 1px solid #ddd;">${event.event_type}</td>
+            <td style="padding: 10px; border: 1px solid #ddd;">${event.payload.action || 'N/A'}</td>
+            <td style="padding: 10px; border: 1px solid #ddd;">${event.delivery_id}</td>
+        </tr>
+    `).join('');
+
+    // Serve the HTML page directly from Express
+    res.send(`
+        <html>
+        <head>
+            <title>Bot Dashboard</title>
+            <style>
+                body { font-family: sans-serif; padding: 2rem; background-color: #f4f4f9; }
+                table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; }
+                th { background-color: #000; color: white; padding: 10px; text-align: left; }
+            </style>
+        </head>
+        <body>
+            <h1>🤖 Bot Activity Log</h1>
+            <p>Welcome! Here is a live log of everything your bot has processed.</p>
+            <table>
+                <tr>
+                    <th>Event Type</th>
+                    <th>Action</th>
+                    <th>Delivery ID</th>
+                </tr>
+                ${tableRows}
+            </table>
+        </body>
+        </html>
+    `);
+});
 
 // ==========================================
-// 3. WEBHOOK RECEIVER & IDEMPOTENCY
+// 3. THE BULLETPROOF WEBHOOK RECEIVER (Core Reqs 2, 3, 4)
 // ==========================================
-app.post('/webhook', verifyGitHubSignature, async (req, res) => {
-    const deliveryId = req.headers['x-github-delivery'];
-    const eventType = req.headers['x-github-event'];
-    
-    // Convert raw buffer back to JSON object
-    const payload = JSON.parse(req.body.toString());
-
-    // 1. Acknowledge receipt immediately (Prevents GitHub timeouts)
+app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
     res.status(202).send('Accepted');
 
-    try {
-        // 2. Idempotency Check: Have we seen this event before?
-        const { data: existingEvent } = await supabase
-            .from('webhook_events')
-            .select('*')
-            .eq('delivery_id', deliveryId)
-            .single();
+    if (!req.body) return;
+    const rawBuffer = req.body;
 
-        if (existingEvent) {
-            console.log(`Event ${deliveryId} already processed. Skipping.`);
-            return;
+    const signature = req.headers['x-hub-signature-256'];
+    if (!signature) return;
+
+    const hmac = crypto.createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET);
+    if (signature !== 'sha256=' + hmac.update(rawBuffer).digest('hex')) return;
+
+    let rawString = rawBuffer.toString();
+    if (rawString.startsWith('payload=')) rawString = decodeURIComponent(rawString.substring(8));
+
+    try {
+        const payload = JSON.parse(rawString);
+        const eventType = req.headers['x-github-event'];
+        const deliveryId = req.headers['x-github-delivery'];
+
+        // Idempotency Check
+        const { data: existing } = await supabase.from('webhook_events').select('*').eq('delivery_id', deliveryId).single();
+        if (existing) return;
+
+        // Log to database (This populates the dashboard!)
+        await supabase.from('webhook_events').insert({ delivery_id: deliveryId, event_type: eventType, payload: payload });
+
+        // --- BOT LOGIC (Handles multiple event types) ---
+        
+        // Scenario 1: Issues
+        if (eventType === 'issues' && payload.action === 'opened' && payload.issue.title.toLowerCase().includes('bug')) {
+            const ownerId = payload.repository.owner.id.toString();
+            const { data: user } = await supabase.from('users').select('access_token').eq('github_id', ownerId).single();
+            
+            if (user) {
+                await axios.post(`https://api.github.com/repos/${payload.repository.full_name}/issues/${payload.issue.number}/labels`, 
+                    { labels: ['bug'] }, { headers: { Authorization: `Bearer ${user.access_token}` } });
+                
+                if (process.env.SLACK_WEBHOOK_URL) {
+                    await axios.post(process.env.SLACK_WEBHOOK_URL, { text: `🚨 Bug found: ${payload.issue.title}` });
+                }
+            }
+        } 
+        // Scenario 2: Pull Requests (The second event type)
+        else if (eventType === 'pull_request' && payload.action === 'opened') {
+            if (process.env.SLACK_WEBHOOK_URL) {
+                await axios.post(process.env.SLACK_WEBHOOK_URL, { text: `🚀 New Pull Request Opened: ${payload.pull_request.title}` });
+            }
         }
 
-        // 3. Log the event in the database as 'pending'
-        const { error: insertError } = await supabase.from('webhook_events').insert({
-            delivery_id: deliveryId,
-            event_type: eventType,
-            payload: payload,
-            status: 'pending'
-        });
-
-        if (insertError) throw insertError;
-        
-        console.log(`✅ Received new ${eventType} event! Delivery ID: ${deliveryId}`);
-
-        // TODO: In the next step, we will add the bot logic here!
-
     } catch (error) {
-        console.error('Error handling webhook:', error);
+        console.error('❌ Processing Error:', error.message);
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 Server is running on http://localhost:${PORT}`);
-    console.log(`👉 Test the login flow by visiting: http://localhost:${PORT}/auth/github`);
-});
+app.listen(3000, () => console.log(`🚀 Server running on http://localhost:3000`));
