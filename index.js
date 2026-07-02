@@ -1,4 +1,6 @@
 require('dotenv').config();
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -85,6 +87,7 @@ app.get('/dashboard', async (req, res) => {
     res.send(`
         <html>
         <head>
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
             <title>Bot Dashboard</title>
             <style>
                 body { font-family: sans-serif; padding: 2rem; background-color: #f4f4f9; }
@@ -154,10 +157,26 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
                 }
             }
         } 
-        // Scenario 2: Pull Requests (The second event type)
+        // Scenario 2: Pull Requests (With AI Summary!)
         else if (eventType === 'pull_request' && payload.action === 'opened') {
+            
+            // 1. Ask the AI to summarize the PR
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const aiPrompt = `Summarize this GitHub Pull Request in one very short sentence. Title: ${payload.pull_request.title}. Body: ${payload.pull_request.body || 'No description provided.'}`;
+            
+            let aiSummary = "No summary available.";
+            try {
+                const result = await model.generateContent(aiPrompt);
+                aiSummary = result.response.text();
+            } catch (aiError) {
+                console.error("AI Error:", aiError);
+            }
+
+            // 2. Send the AI summary to Slack
             if (process.env.SLACK_WEBHOOK_URL) {
-                await axios.post(process.env.SLACK_WEBHOOK_URL, { text: `🚀 New Pull Request Opened: ${payload.pull_request.title}` });
+                await axios.post(process.env.SLACK_WEBHOOK_URL, { 
+                    text: `🚀 *New Pull Request:* ${payload.pull_request.title}\n🤖 *AI Summary:* ${aiSummary}` 
+                });
             }
         }
 
