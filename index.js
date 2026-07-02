@@ -161,7 +161,7 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
         else if (eventType === 'pull_request' && payload.action === 'opened') {
             
             // 1. Ask the AI to summarize the PR
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
             const aiPrompt = `Summarize this GitHub Pull Request in one very short sentence. Title: ${payload.pull_request.title}. Body: ${payload.pull_request.body || 'No description provided.'}`;
             
             let aiSummary = "No summary available.";
