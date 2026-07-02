@@ -2,7 +2,7 @@
 
 ## Stretch Goal Implementation: LLM Integration
 
-To tackle the AI stretch goal, I integrated the `@google/generative-ai` SDK. When a `pull_request` event is triggered, the bot passes the PR title and body to the `gemini-1.5-flash` model with a prompt to summarize the code change in a single sentence. This summary is then dynamically injected into the outgoing Slack notification webhook, successfully bridging GitHub event payloads with live AI processing.
+To tackle the AI stretch goal, I integrated the `@google/generative-ai` SDK. When a `pull_request` event is triggered, the bot passes the PR title and body to the `gemini-2.5-flash` model with a prompt to summarize the code change in a single sentence. This summary is then dynamically injected into the outgoing Slack notification webhook, successfully bridging GitHub event payloads with live AI processing.
 
 ## The Single Hardest Bug
 
