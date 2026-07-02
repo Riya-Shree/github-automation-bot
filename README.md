@@ -7,6 +7,31 @@ An event-driven backend service that reacts to GitHub repository activity. Built
 **Dashboard URL:** https://my-github-automation-bot.onrender.com/dashboard
 _(Note: You must log in via GitHub to view the dashboard)_
 
+## Local Development Setup
+
+To run this bot on your local machine:
+
+1. **Clone the repository:**
+   \`\`\`bash
+   git clone https://github.com/Riya-Shree/github-automation-bot.git
+   cd github-automation-bot
+   npm install
+   \`\`\`
+
+2. **Environment Variables:**
+   Create a `.env` file in the root directory. You can use the provided `.env.example` as a template. You will need:
+   - GitHub OAuth App credentials (Client ID & Secret)
+   - A Supabase project URL and Anon Key
+   - A Slack Webhook URL
+   - A Google Gemini API Key
+   - A custom Webhook Secret string
+
+3. **Start the server:**
+   \`\`\`bash
+   npm start
+   \`\`\`
+   The server will run on `http://localhost:3000`. (Note: To receive live webhooks locally, you will need to expose your localhost using a tool like ngrok).
+
 ## Features Completed (Core & Stretch)
 
 - **OAuth Authentication:** Secure GitHub login flow.

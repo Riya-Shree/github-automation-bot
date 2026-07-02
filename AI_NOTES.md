@@ -13,3 +13,7 @@ The most difficult technical hurdle was a persistent `TypeError [ERR_INVALID_ARG
 Through debugging, I discovered that Express's global middleware parsers (specifically `express.json()` and `express.urlencoded()`) were destructively consuming the incoming HTTP request stream before it ever reached the signature verification logic. Because the stream was already read, `req.body` became undefined for the raw buffer check.
 
 **The Fix:** I completely removed the global Express parsers. I isolated the standard JSON/URL parsing exclusively to the `/auth` routes using an `authRouter`. For the `/webhook` endpoint, I bypassed all standard parsers and used `express.raw({ type: '*/*' })` exclusively. This forced Express to preserve the raw byte buffer from GitHub regardless of the content-type, ensuring the payload could be perfectly hashed and verified against the `x-hub-signature-256` header.
+
+## Note on AI Context Files:
+
+I utilized a conversational AI assistant via a web interface for this project rather than an integrated IDE agent (like Cursor or Windsurf). Therefore, there are no .cursorrules or custom agent instruction files included in this repository.
